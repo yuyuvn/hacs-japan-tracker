@@ -1,0 +1,12 @@
+{
+  "domain": "japan_tracker",
+  "name": "Japan Parcel Tracker",
+  "codeowners": ["@yuyuvn"],
+  "config_flow": true,
+  "dependencies": ["http", "frontend", "todo"],
+  "documentation": "https://github.com/yuyuvn/hacs-japan-tracker",
+  "issue_tracker": "https://github.com/yuyuvn/hacs-japan-tracker/issues",
+  "iot_class": "cloud_polling",
+  "requirements": ["beautifulsoup4>=4.12"],
+  "version": "0.2.0"
+}

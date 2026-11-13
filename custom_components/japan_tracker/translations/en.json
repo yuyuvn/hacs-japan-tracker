@@ -1,0 +1,31 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Japan Parcel Tracker",
+        "description": "Pick the to-do list where you'll add tracking numbers (one per item, e.g. `Headphones 1111-2222-3333`). The carrier is detected automatically; prefix with `sagawa:`, `yamato:`, `jp:` or `ali:` to force one. Tip: create a dedicated list first under Settings → Devices & services → Add integration → Local To-do.",
+        "data": {
+          "todo_entity": "To-do list",
+          "auto_complete": "Mark delivered parcels as done",
+          "write_status": "Write latest status into the item description",
+          "scan_interval": "Update interval (minutes)"
+        }
+      }
+    },
+    "error": { "list_not_found": "That to-do list doesn't exist" },
+    "abort": { "already_configured": "This to-do list is already tracked" }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Japan Parcel Tracker",
+        "data": {
+          "todo_entity": "To-do list",
+          "auto_complete": "Mark delivered parcels as done",
+          "write_status": "Write latest status into the item description",
+          "scan_interval": "Update interval (minutes)"
+        }
+      }
+    }
+  }
+}
