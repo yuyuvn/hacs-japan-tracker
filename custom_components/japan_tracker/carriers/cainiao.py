@@ -85,10 +85,28 @@ def parse(payload: dict[str, Any]) -> TrackingResult:
     return parse_module(modules[0])
 
 
+def _is_signed_code(code: str) -> bool:
+    """Delivery-signature codes (…_SIGNED, …_SIGN). Not CW_SIGN_IN_SUCCESS,
+    which is Cainiao's "Arrived at warehouse" in China."""
+    return ("SIGNED" in code or code.endswith("_SIGN")) and "SIGN_IN" not in code
+
+
+def _left_origin(events: list[dict[str, str]], lit: list[str]) -> bool:
+    """Has the parcel left the origin country? (2nd progress point lit, or a
+    departure event such as LH_HO_AIRLINE "Leaving from departure country/region")."""
+    if len(lit) > 1:
+        return True
+    for e in events:
+        code, low = e["code"].upper(), e["description"].lower()
+        if code.startswith(("LH_HO_AIRLINE", "LH_DEPART")) or "leaving from departure" in low:
+            return True
+    return False
+
+
 def _event_status(code: str, text: str) -> str | None:
     """Status implied by a single event, or None if it doesn't decide anything."""
     code, low = code.upper(), text.lower()
-    if "SIGN" in code or "delivered" in low or "signed for" in low:
+    if _is_signed_code(code) or "delivered" in low or "signed for" in low:
         return STATUS_DELIVERED
     if "FAIL" in code or "RETURN" in code or "failed" in low or "unsuccessful" in low:
         return STATUS_FAILED_ATTEMPT
@@ -133,6 +151,12 @@ def parse_module(mod: dict[str, Any]) -> TrackingResult:
             if all(e["code"] in _INFO_ONLY_CODES for e in events)
             else STATUS_IN_TRANSIT
         )
+        # Cainiao's own first stage is the origin country (warehouse, sorting,
+        # export customs). Show that as "Picked up" until the parcel leaves it,
+        # so AliExpress parcels don't all read "In transit" for days. Only when
+        # Cainiao gives progress points, so we know the stage.
+        if status == STATUS_IN_TRANSIT and lit and not _left_origin(events, lit):
+            status = STATUS_INFO_RECEIVED
 
     last_mile = mod.get("destCpInfo") or {}
     rate = (mod.get("processInfo") or {}).get("progressRate")
