@@ -30,7 +30,25 @@ Items without a tracking number (e.g. "milk") are ignored.
 - delivered parcels are **marked as done** and move to the list's completed section.
 
 ## Dashboard
-The card is registered automatically:
+Two cards are registered automatically (no resource to add); both appear in the dashboard card picker.
+
+**Status card**: visual delivery progress for each parcel:
+
+```yaml
+type: custom:japan-tracker-status-card
+entity: sensor.japan_tracker_packages   # default
+title: Deliveries                        # default
+show_number: true                        # show tracking numbers under names
+layout: auto                             # auto | full | compact (auto: one line per parcel above 4 parcels)
+```
+
+- Summary chips at the top (e.g. "1 out for delivery · 1 missed · 2 in transit")
+- A 4-step tracker per parcel: Picked up → In transit → Out for delivery → Delivered; a missed delivery is flagged in orange
+- Last event, delivery estimate when the carrier gives one (Yamato, Sagawa, Japan Post redelivery date), Cainiao's progress %
+- Expandable history timeline; most urgent parcels first
+- Follows your HA theme (light/dark) and works at phone width
+
+**List card**: compact list with a form to add parcels to the to-do list:
 
 ```yaml
 type: custom:japan-tracker-card
@@ -38,7 +56,7 @@ entity: sensor.japan_tracker_packages
 title: Parcels
 ```
 
-It shows each open parcel with a status badge, last event, history and carrier link, plus a form that adds items to the list. Or simply put a **To-do list card** for the list on your dashboard: the descriptions show the status.
+Or simply put a **To-do list card** for the list on your dashboard: the descriptions show the status.
 
 ## Entities
 - `sensor.japan_tracker_packages` – number of undelivered parcels; attribute `packages` holds all open parcels.
