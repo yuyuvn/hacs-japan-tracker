@@ -142,9 +142,18 @@ async def fetch(session: aiohttp.ClientSession, number: str) -> TrackingResult:
     return await fetch_single(fetch_many, session, number)
 
 
-def _strip_mark(text: str) -> str:
+def _strip_mark(text: Any) -> str:
     """'↓集荷' / '⇒輸送中' -> '集荷' / '輸送中'."""
-    return clean(re.sub(r"^[^\w぀-ヿ一-鿿]+", "", text or ""))
+    return re.sub(r"^[^\w぀-ヿ一-鿿]+", "", clean(text))
+
+
+def _date_line(line: Any) -> str:
+    """{'label': '配達完了日　　：', 'value': '1月1日 10時00分'} -> '配達完了日: 1月1日 10時00分'."""
+    if isinstance(line, dict) and "label" in line:
+        label = clean(line.get("label")).rstrip(":： ")
+        value = clean(line.get("value"))
+        return f"{label}: {value}" if label and value else label or value
+    return clean(line)
 
 
 def parse_result(res: dict[str, Any]) -> TrackingResult:
@@ -179,6 +188,6 @@ def parse_result(res: dict[str, Any]) -> TrackingResult:
             "pickup_office": pickup.get("name", ""),
             "delivery_office": delivery.get("name", ""),
             "delivery_office_tel": delivery.get("tel", ""),
-            "delivery_dates": [clean(d) for d in res.get("dateLines") or []],
+            "delivery_dates": [_date_line(d) for d in res.get("dateLines") or []],
         },
     )
