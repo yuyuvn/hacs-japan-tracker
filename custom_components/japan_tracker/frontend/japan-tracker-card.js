@@ -21,7 +21,7 @@ const matches = (config) => {
 };
 
 const CONDITIONS_SCHEMA = {
-  name: "", type: "expandable", title: "Show conditions", icon: "mdi:filter-variant",
+  name: "", type: "expandable", flatten: true, title: "Show conditions", icon: "mdi:filter-variant",
   schema: [
     { name: "statuses", selector: { select: { multiple: true, mode: "list", options: STATUS_OPTIONS } } },
     { name: "carriers", selector: { select: { multiple: true, mode: "list", options: CARRIER_OPTIONS } } },
