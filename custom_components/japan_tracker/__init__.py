@@ -4,6 +4,7 @@ Parcels are entered as items on a Home Assistant to-do list chosen at setup.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from homeassistant.components import frontend
@@ -23,7 +24,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     # Serve + auto-load the dashboard card.
     js = Path(__file__).parent / "frontend" / "japan-tracker-card.js"
     await hass.http.async_register_static_paths([StaticPathConfig(CARD_URL, str(js), False)])
-    frontend.add_extra_js_url(hass, CARD_URL)
+    # Version the URL by content so browsers and HA's service worker drop a cached old card after an update.
+    digest = await hass.async_add_executor_job(lambda: hashlib.sha1(js.read_bytes()).hexdigest()[:10])
+    frontend.add_extra_js_url(hass, f"{CARD_URL}?v={digest}")
     return True
 
 
