@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Python test dependencies (requirements_test.txt)
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14 # only versions released at least 14 days ago
+    groups:
+      python:
+        patterns: ["*"]
+
+  # GitHub Actions used in workflows
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      github-actions:
+        patterns: ["*"]
