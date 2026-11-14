@@ -1,5 +1,78 @@
-/* Japan Parcel Tracker card. Config: type: custom:japan-tracker-card, entity: sensor.japan_tracker_packages,
- * delivered_entity: sensor.japan_tracker_delivered (collapsible "Delivered" section; false to hide) */
+/* Japan Parcel Tracker cards. Both are configurable from the dashboard editor (getConfigForm).
+ * Show conditions shared by both cards:
+ *   statuses: [out_for_delivery, failed_attempt]   only parcels with these statuses (empty = all)
+ *   carriers: [sagawa, kuroneko]                   only parcels from these carriers (empty = all)
+ *   hide_empty: true                               hide the whole card when no parcel matches
+ * The editor's built-in "Visibility" tab still works for card-level conditions (entity state, screen, user). */
+const STATUS_OPTIONS = [
+  ["out_for_delivery", "Out for delivery"], ["failed_attempt", "Missed delivery"], ["in_transit", "In transit"],
+  ["info_received", "Picked up"], ["pending", "Pending"], ["not_found", "Not found"], ["error", "Error"],
+  ["unknown", "Unknown"], ["delivered", "Delivered"],
+].map(([value, label]) => ({ value, label }));
+const CARRIER_OPTIONS = [
+  ["sagawa", "Sagawa"], ["kuroneko", "Kuroneko Yamato"], ["japanpost", "Japan Post"], ["cainiao", "Cainiao"],
+].map(([value, label]) => ({ value, label }));
+
+const asList = (v) => (Array.isArray(v) ? v : v ? [v] : []);
+// Apply the show conditions to a list of parcels.
+const matches = (config) => {
+  const statuses = asList(config.statuses), carriers = asList(config.carriers);
+  return (p) => (!statuses.length || statuses.includes(p.status)) && (!carriers.length || carriers.includes(p.carrier));
+};
+
+const CONDITIONS_SCHEMA = {
+  name: "", type: "expandable", title: "Show conditions", icon: "mdi:filter-variant",
+  schema: [
+    { name: "statuses", selector: { select: { multiple: true, mode: "list", options: STATUS_OPTIONS } } },
+    { name: "carriers", selector: { select: { multiple: true, mode: "list", options: CARRIER_OPTIONS } } },
+    { name: "hide_empty", selector: { boolean: {} } },
+  ],
+};
+const FORM_LABELS = {
+  entity: "Parcels sensor", delivered_entity: "Delivered sensor", show_delivered: "Show delivered section",
+  title: "Title", layout: "Layout", show_number: "Show tracking numbers",
+  statuses: "Only these statuses", carriers: "Only these carriers", hide_empty: "Hide card when no parcel matches",
+};
+const FORM_HELPERS = {
+  statuses: "Leave empty to show every status.",
+  carriers: "Leave empty to show every carrier.",
+  hide_empty: "Hidden on the dashboard only; the editor preview keeps showing it.",
+  layout: "Auto switches to one line per parcel above 4 parcels.",
+};
+const configForm = (schema) => ({
+  schema: [...schema, CONDITIONS_SCHEMA],
+  computeLabel: (s) => FORM_LABELS[s.name],
+  computeHelper: (s) => FORM_HELPERS[s.name],
+});
+const sensorSelector = { entity: { domain: "sensor", integration: "japan_tracker" } };
+
+// Hide the card (hide_empty) except in the editor, and tell HA's grid so it can drop the slot.
+function setCardHidden(card, hide) {
+  const editing = card.editMode || card.preview || card.hasAttribute("preview");
+  const hidden = hide && !editing;
+  if (card.hidden !== hidden) {
+    card.hidden = hidden;
+    card.style.display = hidden ? "none" : "";
+    card.dispatchEvent(new Event("card-visibility-changed", { bubbles: true, composed: true }));
+  }
+  return hide && editing; // caller shows a "hidden on the dashboard" note
+}
+// HA sets editMode (dashboard edit mode) / preview (card editor) on cards; re-render so a hidden card shows up there.
+function trackEditing(cls) {
+  for (const prop of ["editMode", "preview"]) {
+    Object.defineProperty(cls.prototype, prop, {
+      get() { return this[`_${prop}`]; },
+      set(v) {
+        this[`_${prop}`] = v;
+        this._sig = undefined;
+        if (this._hass && this._config) this.hass = this._hass;
+      },
+    });
+  }
+}
+const HIDDEN_NOTE = '<div class="hidden-note">No parcel matches the show conditions: this card is hidden on the dashboard.</div>';
+const HIDDEN_NOTE_CSS = ".hidden-note{margin:8px 0;padding:6px 10px;border-radius:6px;font-size:12px;color:var(--secondary-text-color);border:1px dashed var(--divider-color)}";
+
 const COLORS = {
   delivered: "var(--success-color, #43a047)",
   out_for_delivery: "var(--info-color, #039be5)",
@@ -19,16 +92,32 @@ const LABELS = {
 
 class JapanTrackerCard extends HTMLElement {
   setConfig(config) {
-    this._config = { entity: "sensor.japan_tracker_packages", delivered_entity: "sensor.japan_tracker_delivered", title: "Parcels", ...config };
+    // delivered_entity: false (older configs) is the same as show_delivered: false.
+    this._config = {
+      entity: "sensor.japan_tracker_packages", delivered_entity: "sensor.japan_tracker_delivered",
+      show_delivered: config.delivered_entity !== false, title: "Parcels", ...config,
+    };
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._sig = undefined;
+    if (this._hass) this.hass = this._hass;
   }
   getCardSize() { return 4; }
   static getStubConfig() { return { entity: "sensor.japan_tracker_packages" }; }
+  static getConfigForm() {
+    return configForm([
+      { name: "entity", required: true, selector: sensorSelector },
+      { name: "title", selector: { text: {} } },
+      { name: "show_delivered", selector: { boolean: {} } },
+      { name: "delivered_entity", selector: sensorSelector },
+    ]);
+  }
 
   set hass(hass) {
     this._hass = hass;
+    if (!this._config) return;
     const st = hass.states[this._config.entity];
-    const dst = this._config.delivered_entity ? hass.states[this._config.delivered_entity] : undefined;
+    const showDone = this._config.show_delivered !== false && this._config.delivered_entity;
+    const dst = showDone ? hass.states[this._config.delivered_entity] : undefined;
     const sig = `${st ? st.last_updated : "none"}|${dst ? dst.last_updated : "none"}`;
     if (sig === this._sig && this._rendered) return; // avoid wiping input while typing
     this._sig = sig;
@@ -41,8 +130,11 @@ class JapanTrackerCard extends HTMLElement {
 
   _render(st, dst) {
     this._rendered = true;
-    const pkgs = st?.attributes?.packages ?? [];
-    const done = dst?.attributes?.packages ?? [];
+    const keep = matches(this._config);
+    const pkgs = (st?.attributes?.packages ?? []).filter(keep);
+    const done = (dst?.attributes?.packages ?? []).filter(keep);
+    const filtered = asList(this._config.statuses).length || asList(this._config.carriers).length;
+    const note = setCardHidden(this, this._config.hide_empty && st && !pkgs.length && !done.length) ? HIDDEN_NOTE : "";
     const row = (p) => `
       <div class="pkg">
         <div class="head">
@@ -83,10 +175,13 @@ class JapanTrackerCard extends HTMLElement {
         details.done{margin-top:8px}
         details.done>summary{font-size:13px;padding:6px 0}
         details.done .pkg{opacity:.75}
+        ${HIDDEN_NOTE_CSS}
       </style>
       <ha-card header="${this._esc(this._config.title)}">
         <div class="card-content">
-          ${rows || '<div class="empty">No parcels on the list. Add a tracking number below or to the to-do list.</div>'}
+          ${note}
+          ${rows || (filtered ? '<div class="empty">No parcel matches the show conditions.</div>'
+            : '<div class="empty">No parcels on the list. Add a tracking number below or to the to-do list.</div>')}
           ${doneRows}
           <form>
             <select name="carrier" title="Carrier">
@@ -123,6 +218,7 @@ class JapanTrackerCard extends HTMLElement {
       }));
   }
 }
+trackEditing(JapanTrackerCard);
 customElements.define("japan-tracker-card", JapanTrackerCard);
 
 /* ------------------------------------------------------------------------- *
@@ -131,6 +227,8 @@ customElements.define("japan-tracker-card", JapanTrackerCard);
  *   entity: sensor.japan_tracker_packages   (default)
  *   title: Deliveries                        (default)
  *   show_number: true                        (show tracking numbers)
+ *   layout: auto | full | compact
+ *   statuses / carriers / hide_empty         (show conditions, see top of file)
  * ------------------------------------------------------------------------- */
 
 const STEPS = [
@@ -193,6 +291,15 @@ class JapanTrackerStatusCard extends HTMLElement {
     if (this._hass) this.hass = this._hass;
   }
   static getStubConfig() { return { entity: "sensor.japan_tracker_packages" }; }
+  static getConfigForm() {
+    return configForm([
+      { name: "entity", required: true, selector: sensorSelector },
+      { name: "title", selector: { text: {} } },
+      { name: "layout", selector: { select: { mode: "dropdown", options: [
+        { value: "auto", label: "Auto" }, { value: "full", label: "Full" }, { value: "compact", label: "Compact" }] } } },
+      { name: "show_number", selector: { boolean: {} } },
+    ]);
+  }
   getCardSize() {
     const n = this._hass?.states[this._config.entity]?.attributes?.packages?.length || 0;
     return 2 + n * 2;
@@ -337,13 +444,16 @@ class JapanTrackerStatusCard extends HTMLElement {
   _render(st) {
     const root = this.shadowRoot;
     if (!st) {
+      setCardHidden(this, false);
       root.innerHTML = `<ha-card><div class="pad warn-msg">Entity ${this._esc(this._config.entity)} not found.</div></ha-card>`;
       return;
     }
-    const pkgs = [...(st.attributes.packages || [])].sort(
+    const pkgs = (st.attributes.packages || []).filter(matches(this._config)).sort(
       (a, b) => (PRIORITY[a.status] ?? 9) - (PRIORITY[b.status] ?? 9) || String(a.name).localeCompare(String(b.name)));
     const layout = this._config.layout;
     const compact = layout === "compact" || (layout === "auto" && pkgs.length > COMPACT_ABOVE);
+    const note = setCardHidden(this, this._config.hide_empty && !pkgs.length) ? HIDDEN_NOTE : "";
+    const filtered = asList(this._config.statuses).length || asList(this._config.carriers).length;
 
     root.innerHTML = `
       <style>${JapanTrackerStatusCard.styles}</style>
@@ -353,7 +463,9 @@ class JapanTrackerStatusCard extends HTMLElement {
           <div class="chips">${this._chips(pkgs)}</div>
         </div>
         <div class="list ${compact ? "compact" : ""}">
-          ${pkgs.map((p) => (compact ? this._compactRow(p) : this._row(p))).join("") || '<div class="empty">No parcels on the way.</div>'}
+          ${note}
+          ${pkgs.map((p) => (compact ? this._compactRow(p) : this._row(p))).join("")
+            || `<div class="empty">${filtered ? "No parcel matches the show conditions." : "No parcels on the way."}</div>`}
         </div>
       </ha-card>`;
 
@@ -472,8 +584,10 @@ JapanTrackerStatusCard.styles = `
   .clink:hover { text-decoration: underline; }
   .clink:focus-visible, .crow > summary:focus-visible { outline: 2px solid var(--jt-accent); outline-offset: 2px; border-radius: 4px; }
   @media (max-width: 380px) { .ccarrier { display: none; } }
+  ${HIDDEN_NOTE_CSS}
 `;
 
+trackEditing(JapanTrackerStatusCard);
 customElements.define("japan-tracker-status-card", JapanTrackerStatusCard);
 
 window.customCards = window.customCards || [];

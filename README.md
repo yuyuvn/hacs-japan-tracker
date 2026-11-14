@@ -30,7 +30,7 @@ Items without a tracking number (e.g. "milk") are ignored.
 - delivered parcels are **marked as done** and move to the list's completed section.
 
 ## Dashboard
-Two cards are registered automatically (no resource to add); both appear in the dashboard card picker.
+Two cards are registered automatically (no resource to add); both appear in the dashboard card picker and can be configured from the visual editor (or in YAML).
 
 **Status card**: visual delivery progress for each parcel:
 
@@ -53,9 +53,20 @@ layout: auto                             # auto | full | compact (auto: one line
 ```yaml
 type: custom:japan-tracker-card
 entity: sensor.japan_tracker_packages
-delivered_entity: sensor.japan_tracker_delivered   # default; "Delivered" section, set false to hide
+delivered_entity: sensor.japan_tracker_delivered   # default; "Delivered" section
+show_delivered: true                                # false hides the "Delivered" section
 title: Parcels
 ```
+
+**Show conditions** (both cards, under *Show conditions* in the editor):
+
+```yaml
+statuses: [out_for_delivery, failed_attempt]   # only parcels with these statuses (default: all)
+carriers: [sagawa, kuroneko]                   # only these carriers: sagawa, kuroneko, japanpost, cainiao (default: all)
+hide_empty: true                               # hide the whole card when no parcel matches
+```
+
+A card hidden by `hide_empty` stays visible while editing the dashboard. For other card-level conditions (time of day, user, screen size, another entity's state) use the editor's built-in **Visibility** tab.
 
 Or simply put a **To-do list card** for the list on your dashboard: the descriptions show the status.
 
