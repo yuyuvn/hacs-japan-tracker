@@ -1,0 +1,7 @@
+# Test dependencies (CI). Dependabot keeps these up to date.
+# pytest-homeassistant-custom-component pins Home Assistant itself; the others
+# are deps of HA components the tests load (frontend, local_todo) plus our own.
+pytest-homeassistant-custom-component==0.13.375
+home-assistant-frontend==20260930.5
+ical==14.3.0
+beautifulsoup4==4.15.0
