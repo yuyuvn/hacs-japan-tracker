@@ -117,5 +117,13 @@ def decode(raw: bytes) -> str:
         return raw.decode("cp932", errors="replace")
 
 
-def clean(text: str | None) -> str:
+def clean(text: Any) -> str:
+    """Collapse whitespace; also flattens dicts/lists that APIs sometimes return
+    where a plain string used to be (e.g. {"label": "...", "value": "..."})."""
+    if isinstance(text, dict):
+        text = " ".join(clean(v) for v in text.values())
+    elif isinstance(text, (list, tuple)):
+        text = " ".join(clean(v) for v in text)
+    elif text is not None and not isinstance(text, str):
+        text = str(text)
     return " ".join((text or "").split())
