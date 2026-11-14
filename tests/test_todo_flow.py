@@ -147,6 +147,14 @@ async def test_todo_list_flow(hass: HomeAssistant, calls) -> None:
     assert summary.state == "1"
     assert summary.attributes["todo_entity"] == TODO
     assert [p["number"] for p in summary.attributes["packages"]] == ["111122223333"]
+    # ...but it stays visible as delivered, with its full tracking result.
+    done_sensor = hass.states.get("sensor.japan_tracker_delivered")
+    assert done_sensor.state == "1"
+    [delivered] = done_sensor.attributes["packages"]
+    assert delivered["number"] == "444455556666"
+    assert delivered["status"] == STATUS_DELIVERED
+    assert delivered["carrier"] == "kuroneko"
+    assert delivered["events"]
 
     # Adding an item reacts immediately; existing parcels are NOT re-queried
     # (detected carrier is remembered and they're not due yet).
@@ -201,6 +209,34 @@ async def test_batches_per_carrier_and_chunks_of_ten(hass: HomeAssistant, calls)
     coordinator = hass.data[DOMAIN][next(iter(hass.data[DOMAIN]))]
     await coordinator.async_refresh()
     assert calls == []
+
+
+async def test_completed_items_listed_as_delivered(hass: HomeAssistant, calls) -> None:
+    """Items already ticked before setup (e.g. after a restart) show as delivered, never queried."""
+    todo_entry = MockConfigEntry(domain="local_todo", data={"todo_list_name": "Parcels", "storage_key": "parcels"})
+    todo_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(todo_entry.entry_id)
+    await hass.async_block_till_done()
+    await _add(hass, "sagawa: 999988887777 Old box")
+    uid = (await _items(hass, "needs_action"))["sagawa: 999988887777 Old box"]["uid"]
+    await hass.services.async_call(
+        "todo", "update_item",
+        {"entity_id": TODO, "item": uid, "status": "completed", "description": "Sagawa Express: 配達完了"},
+        blocking=True,
+    )
+    entry = MockConfigEntry(domain=DOMAIN, version=2, unique_id=TODO, data={"todo_entity": TODO})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert calls == []
+    summary = hass.states.get("sensor.japan_tracker_packages")
+    assert summary.state == "0"
+    assert hass.states.get("sensor.japan_tracker_delivered").state == "1"
+    [d] = hass.states.get("sensor.japan_tracker_delivered").attributes["packages"]
+    assert (d["number"], d["name"], d["carrier"], d["status"]) == ("999988887777", "Old box", "sagawa", STATUS_DELIVERED)
+    assert d["status_text"] == "Sagawa Express: 配達完了"
+    assert d["url"]
 
 
 async def test_partial_batch_failure(hass: HomeAssistant, calls) -> None:

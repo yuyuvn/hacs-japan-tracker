@@ -53,6 +53,7 @@ layout: auto                             # auto | full | compact (auto: one line
 ```yaml
 type: custom:japan-tracker-card
 entity: sensor.japan_tracker_packages
+delivered_entity: sensor.japan_tracker_delivered   # default; "Delivered" section, set false to hide
 title: Parcels
 ```
 
@@ -60,6 +61,7 @@ Or simply put a **To-do list card** for the list on your dashboard: the descript
 
 ## Entities
 - `sensor.japan_tracker_packages` – number of undelivered parcels; attribute `packages` holds all open parcels.
+- `sensor.japan_tracker_delivered` – number of completed (delivered) items on the list; attribute `packages` holds them (newest first, up to 20) with their last known tracking result. Delivered parcels are no longer queried.
 - `sensor.parcel_<name>` – one per open list item, created/removed automatically. State: `pending`, `info_received`, `in_transit`, `out_for_delivery`, `failed_attempt`, `delivered`, `not_found`, `error`, `unknown`.
 
 Example automation trigger: a parcel sensor changes to `out_for_delivery`.
