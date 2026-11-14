@@ -1,4 +1,5 @@
-/* Japan Parcel Tracker card. Config: type: custom:japan-tracker-card, entity: sensor.japan_tracker_packages */
+/* Japan Parcel Tracker card. Config: type: custom:japan-tracker-card, entity: sensor.japan_tracker_packages,
+ * delivered_entity: sensor.japan_tracker_delivered (collapsible "Delivered" section; false to hide) */
 const COLORS = {
   delivered: "var(--success-color, #43a047)",
   out_for_delivery: "var(--info-color, #039be5)",
@@ -18,7 +19,7 @@ const LABELS = {
 
 class JapanTrackerCard extends HTMLElement {
   setConfig(config) {
-    this._config = { entity: "sensor.japan_tracker_packages", title: "Parcels", ...config };
+    this._config = { entity: "sensor.japan_tracker_packages", delivered_entity: "sensor.japan_tracker_delivered", title: "Parcels", ...config };
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
   }
   getCardSize() { return 4; }
@@ -27,20 +28,22 @@ class JapanTrackerCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     const st = hass.states[this._config.entity];
-    const sig = st ? st.last_updated : "none";
+    const dst = this._config.delivered_entity ? hass.states[this._config.delivered_entity] : undefined;
+    const sig = `${st ? st.last_updated : "none"}|${dst ? dst.last_updated : "none"}`;
     if (sig === this._sig && this._rendered) return; // avoid wiping input while typing
     this._sig = sig;
-    this._render(st);
+    this._render(st, dst);
   }
 
   _esc(s) {
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  _render(st) {
+  _render(st, dst) {
     this._rendered = true;
     const pkgs = st?.attributes?.packages ?? [];
-    const rows = pkgs.map((p) => `
+    const done = dst?.attributes?.packages ?? [];
+    const row = (p) => `
       <div class="pkg">
         <div class="head">
           ${p.url ? `<a href="${this._esc(p.url)}" target="_blank" rel="noopener">${this._esc(p.name)}</a>` : `<a>${this._esc(p.name)}</a>`}
@@ -53,7 +56,13 @@ class JapanTrackerCard extends HTMLElement {
         <details><summary>History</summary>
           ${(p.events || []).map((e) => `<div class="ev"><span class="muted">${this._esc(e.time)}</span> ${this._esc(e.description)} <span class="muted">${this._esc(e.location)}</span></div>`).join("") || '<div class="muted">No events yet</div>'}
         </details>
-      </div>`).join("");
+      </div>`;
+    const rows = pkgs.map(row).join("");
+    const doneRows = done.length ? `
+      <details class="done" ${this._doneOpen ? "open" : ""}>
+        <summary>Delivered · ${done.length}</summary>
+        ${done.map(row).join("")}
+      </details>` : "";
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -71,10 +80,14 @@ class JapanTrackerCard extends HTMLElement {
         form input{flex:1;min-width:120px}
         form button{background:var(--primary-color);color:var(--text-primary-color,#fff);cursor:pointer}
         .empty{padding:12px 0;color:var(--secondary-text-color)}
+        details.done{margin-top:8px}
+        details.done>summary{font-size:13px;padding:6px 0}
+        details.done .pkg{opacity:.75}
       </style>
       <ha-card header="${this._esc(this._config.title)}">
         <div class="card-content">
           ${rows || '<div class="empty">No parcels on the list. Add a tracking number below or to the to-do list.</div>'}
+          ${doneRows}
           <form>
             <select name="carrier" title="Carrier">
               <option value="">Auto-detect</option>
@@ -89,6 +102,8 @@ class JapanTrackerCard extends HTMLElement {
           </form>
         </div>
       </ha-card>`;
+
+    this.shadowRoot.querySelector("details.done")?.addEventListener("toggle", (ev) => { this._doneOpen = ev.target.open; });
 
     // Parcels live on the to-do list chosen at setup; the card just edits that list.
     const todo = st?.attributes?.todo_entity;

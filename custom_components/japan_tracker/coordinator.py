@@ -3,7 +3,8 @@
 Each open (needs_action) item containing a tracking number is tracked. The
 carrier is auto-detected by probing candidate carriers and remembered. When a
 parcel is delivered, the item is marked completed (moves to the list's done
-section) and drops out of tracking.
+section) and drops out of tracking. Completed items stay visible as
+`delivered` (last known result kept; no further carrier queries).
 """
 from __future__ import annotations
 
@@ -75,19 +76,21 @@ class JapanTrackerCoordinator(DataUpdateCoordinator[dict[str, Parcel]]):
         self.session = async_get_clientsession(hass)
         self._store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}")
         self._detected: dict[str, str] = {}  # number -> carrier
+        # Completed items on the list (not queried any more), list order, newest ticks first.
+        self.delivered: dict[str, Parcel] = {}
 
     async def async_load(self) -> None:
         self._detected = await self._store.async_load() or {}
 
     # ---- to-do list access -------------------------------------------------
 
-    async def _open_items(self) -> list[dict[str, Any]]:
+    async def _items(self) -> list[dict[str, Any]]:
         if self.hass.states.get(self.todo_entity) is None:
             raise UpdateFailed(f"To-do list {self.todo_entity} not found")
         resp = await self.hass.services.async_call(
             "todo",
             "get_items",
-            {"entity_id": self.todo_entity, "status": ["needs_action"]},
+            {"entity_id": self.todo_entity, "status": ["needs_action", "completed"]},
             blocking=True,
             return_response=True,
         )
@@ -191,7 +194,10 @@ class JapanTrackerCoordinator(DataUpdateCoordinator[dict[str, Parcel]]):
     async def _async_update_data(self) -> dict[str, Parcel]:
         old = self.data or {}
         parcels: dict[str, Parcel] = {}
-        for item in await self._open_items():
+        items = await self._items()
+        for item in items:
+            if item.get("status") != "needs_action":
+                continue
             parsed = parse_item(item.get("summary", ""))
             if parsed is None or parsed.number in parcels:
                 continue
@@ -218,15 +224,44 @@ class JapanTrackerCoordinator(DataUpdateCoordinator[dict[str, Parcel]]):
 
         # Items we just ticked as done leave tracking now, rather than on the
         # next (debounced) refresh triggered by the list change.
-        for number in await self._sync_list(fresh):
-            parcels.pop(number, None)
+        ticked = {n: parcels.pop(n) for n in await self._sync_list(fresh) if n in parcels}
+        self.delivered = {**ticked, **self._done_parcels(items, parcels, ticked, old)}
 
         # Forget detections for numbers no longer on the list.
-        if stale := set(self._detected) - set(parcels):
+        if stale := set(self._detected) - set(parcels) - set(self.delivered):
             for number in stale:
                 self._detected.pop(number)
             self._store.async_delay_save(lambda: self._detected, 5)
         return parcels
+
+    def _done_parcels(
+        self, items: list[dict[str, Any]], open_: dict[str, Parcel], ticked: dict[str, Parcel], old: dict[str, Parcel]
+    ) -> dict[str, Parcel]:
+        """Completed list items, reusing the last tracking result we have for each."""
+        done: dict[str, Parcel] = {}
+        for item in items:
+            if item.get("status") != "completed":
+                continue
+            parsed = parse_item(item.get("summary", ""))
+            if parsed is None or parsed.number in open_ or parsed.number in ticked or parsed.number in done:
+                continue
+            name, description = parsed.name or parsed.number, item.get("description") or ""
+            prev = self.delivered.get(parsed.number) or old.get(parsed.number)
+            if prev is not None:
+                prev.name, prev.uid, prev.description = name, item["uid"], description
+                done[parsed.number] = prev
+                continue
+            # Ticked before this run (e.g. HA restarted): only the list text is known.
+            done[parsed.number] = Parcel(
+                number=parsed.number,
+                name=name,
+                uid=item["uid"],
+                description=description,
+                carrier=parsed.carrier or self._detected.get(parsed.number),
+                forced=parsed.carrier is not None,
+                result=TrackingResult(status=STATUS_DELIVERED, status_text=description),
+            )
+        return done
 
     async def _sync_list(self, parcels: list[Parcel]) -> set[str]:
         """Write statuses / tick delivered items. Returns numbers marked completed."""

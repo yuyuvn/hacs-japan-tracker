@@ -1,4 +1,5 @@
-"""Sensors: one per tracked to-do item, plus a summary used by the dashboard card.
+"""Sensors: one per tracked to-do item, plus summaries used by the dashboard cards
+(parcels on the way, and delivered = completed items on the list).
 
 Parcel sensors are created and removed as items appear on / leave the list.
 """
@@ -19,6 +20,7 @@ from .const import CARRIERS, DOMAIN
 from .coordinator import JapanTrackerCoordinator, Parcel
 
 SUMMARY_SUFFIX = "summary"
+DELIVERED_SUFFIX = "delivered"
 
 
 async def async_setup_entry(
@@ -27,7 +29,7 @@ async def async_setup_entry(
     coordinator: JapanTrackerCoordinator = hass.data[DOMAIN][entry.entry_id]
     registry = er.async_get(hass)
     known: set[str] = set()
-    async_add_entities([SummarySensor(coordinator)])
+    async_add_entities([SummarySensor(coordinator), DeliveredSensor(coordinator)])
 
     @callback
     def _sync() -> None:
@@ -39,7 +41,7 @@ async def async_setup_entry(
         # left in the registry from before a restart.
         for reg in er.async_entries_for_config_entry(registry, entry.entry_id):
             number = reg.unique_id.removeprefix(f"{entry.entry_id}_")
-            if number != SUMMARY_SUFFIX and number not in current:
+            if number not in (SUMMARY_SUFFIX, DELIVERED_SUFFIX) and number not in current:
                 known.discard(number)
                 registry.async_remove(reg.entity_id)
 
@@ -121,4 +123,28 @@ class SummarySensor(CoordinatorEntity[JapanTrackerCoordinator], SensorEntity):
         return {
             "todo_entity": self.coordinator.todo_entity,
             "packages": [parcel_dict(p) for p in (self.coordinator.data or {}).values()],
+        }
+
+
+class DeliveredSensor(CoordinatorEntity[JapanTrackerCoordinator], SensorEntity):
+    """State = number of completed parcels on the list; attributes carry them (newest ticks first)."""
+
+    _attr_icon = "mdi:package-variant-closed-check"
+    _attr_native_unit_of_measurement = "parcels"
+    MAX_LISTED = 20  # keep the state attributes small
+
+    def __init__(self, coordinator: JapanTrackerCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_{DELIVERED_SUFFIX}"
+        self._attr_name = "Japan Tracker Delivered"
+
+    @property
+    def native_value(self) -> int:
+        return len(self.coordinator.delivered)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "todo_entity": self.coordinator.todo_entity,
+            "packages": [parcel_dict(p) for p in list(self.coordinator.delivered.values())[: self.MAX_LISTED]],
         }
