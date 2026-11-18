@@ -239,6 +239,52 @@ async def test_completed_items_listed_as_delivered(hass: HomeAssistant, calls) -
     assert d["url"]
 
 
+async def _clear_done_list(hass: HomeAssistant) -> None:
+    """What the list card's "clear completed" does. The open-item count (the entity state) is unchanged."""
+    uids = [i["uid"] for i in (await _items(hass, "completed")).values()]
+    await hass.services.async_call("todo", "remove_item", {"entity_id": TODO, "item": uids}, blocking=True)
+    await hass.async_block_till_done()
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=11))  # refresh debouncer
+    await hass.async_block_till_done()
+
+
+async def test_clearing_done_list_clears_delivered(hass: HomeAssistant, calls) -> None:
+    await _setup(hass, ["444455556666", "Headphones 1111-2222-3333"])
+    assert hass.states.get("sensor.japan_tracker_delivered").state == "1"
+    assert hass.states.get("sensor.japan_tracker_packages").state == "1"
+
+    await _clear_done_list(hass)
+
+    done_sensor = hass.states.get("sensor.japan_tracker_delivered")
+    assert done_sensor.state == "0"
+    assert done_sensor.attributes["packages"] == []
+    assert hass.states.get("sensor.japan_tracker_packages").state == "1"
+
+
+async def test_clearing_done_list_when_list_loads_after_tracker(hass: HomeAssistant, calls) -> None:
+    """The tracker subscribes to item updates once the list entity shows up."""
+    entry = MockConfigEntry(domain=DOMAIN, version=2, unique_id=TODO, data={"todo_entity": TODO})
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)  # fails: list not there yet, retried later
+    await hass.async_block_till_done()
+    todo_entry = MockConfigEntry(domain="local_todo", data={"todo_list_name": "Parcels", "storage_key": "parcels"})
+    todo_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(todo_entry.entry_id)
+    await hass.async_block_till_done()
+    await _add(hass, "444455556666")
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    # Reload the list itself: the tracker must follow the new entity object.
+    assert await hass.config_entries.async_reload(todo_entry.entry_id)
+    await hass.async_block_till_done()
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=11))
+    await hass.async_block_till_done()
+    assert hass.states.get("sensor.japan_tracker_delivered").state == "1"
+
+    await _clear_done_list(hass)
+    assert hass.states.get("sensor.japan_tracker_delivered").state == "0"
+
+
 async def test_partial_batch_failure(hass: HomeAssistant, calls) -> None:
     """One number erroring inside a batch doesn't affect the others."""
     async def flaky(session, numbers, previous):
