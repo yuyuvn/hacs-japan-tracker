@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
 from homeassistant.components import frontend
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.todo.const import DATA_COMPONENT as TODO_DATA_COMPONENT
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
@@ -36,14 +38,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    # React quickly when items are added/completed (the to-do entity's state is
-    # its open-item count). Only new parcels are queried; others wait their turn.
+    # React quickly when the list changes. Only new parcels are queried; others
+    # wait their turn.
     @callback
-    def _list_changed(event: Event[EventStateChangedData]) -> None:
+    def _refresh(*_: Any) -> None:
         hass.async_create_task(coordinator.async_request_refresh())
 
+    # The entity's state is only its open-item count, so removing completed
+    # items (clearing the done list) or editing one doesn't change it. Item
+    # updates are pushed to subscribers, like the frontend's list card.
+    subscription: dict[str, Any] = {"entity": None, "unsub": None}
+
+    @callback
+    def _subscribe_items() -> None:
+        component = hass.data.get(TODO_DATA_COMPONENT)
+        entity = component.get_entity(coordinator.todo_entity) if component else None
+        if entity is subscription["entity"]:
+            return
+        if subscription["unsub"]:
+            subscription["unsub"]()
+        subscription["entity"] = entity
+        subscription["unsub"] = entity.async_subscribe_updates(_refresh) if entity else None
+
+    @callback
+    def _unsubscribe_items() -> None:
+        if subscription["unsub"]:
+            subscription["unsub"]()
+
+    # State changes still trigger a refresh, and re-subscribe if the list
+    # entity was (re)loaded after us.
+    @callback
+    def _state_changed(event: Event[EventStateChangedData]) -> None:
+        _subscribe_items()
+        _refresh()
+
+    _subscribe_items()
+    entry.async_on_unload(_unsubscribe_items)
     entry.async_on_unload(
-        async_track_state_change_event(hass, [coordinator.todo_entity], _list_changed)
+        async_track_state_change_event(hass, [coordinator.todo_entity], _state_changed)
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
