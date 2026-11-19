@@ -26,13 +26,15 @@ ALL_STATUSES = [
     STATUS_UNKNOWN,
 ]
 
+OUT_FOR_DELIVERY_WORDS = ("持出中", "持ち出し中", "配達中", "配達に出発", "out for delivery")
+
 # Order matters: first match wins.
 _KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
     # Avoid generic phrases like "received by" / "delivering": Cainiao uses them
     # for early stages ("information received by warehouse", status DELIVERING).
     (STATUS_DELIVERED, ("配達完了", "配達済", "お届け完了", "お届け済", "お渡し済", "delivered", "signed for")),
     (STATUS_FAILED_ATTEMPT, ("不在", "持戻", "持ち戻", "返送", "failed", "unsuccessful", "undeliverable")),
-    (STATUS_OUT_FOR_DELIVERY, ("持出中", "持ち出し中", "配達中", "配達に出発", "out for delivery")),
+    (STATUS_OUT_FOR_DELIVERY, OUT_FOR_DELIVERY_WORDS),
     (STATUS_IN_TRANSIT, ("輸送中", "発送", "到着", "中継", "通過", "搬入", "搬出", "税関", "通関", "transit", "depart", "arriv", "customs", "export", "import", "sorting", "linehaul")),
     (STATUS_INFO_RECEIVED, ("荷物受付", "集荷", "受付", "引受", "received", "pick", "label created", "order")),
 ]
