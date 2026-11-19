@@ -12,6 +12,7 @@ from typing import Any
 import aiohttp
 
 from .base import (
+    OUT_FOR_DELIVERY_WORDS,
     STATUS_DELIVERED,
     STATUS_FAILED_ATTEMPT,
     STATUS_IN_TRANSIT,
@@ -110,7 +111,9 @@ def _event_status(code: str, text: str) -> str | None:
         return STATUS_DELIVERED
     if "FAIL" in code or "RETURN" in code or "failed" in low or "unsuccessful" in low:
         return STATUS_FAILED_ATTEMPT
-    if "out for delivery" in low or code.endswith("_DELIVERING"):
+    # The Japanese last-mile carrier's text is sometimes passed through as-is
+    # (e.g. "配達中"), so match the shared keywords, not only English.
+    if any(w in low for w in OUT_FOR_DELIVERY_WORDS) or code.endswith("_DELIVERING"):
         return STATUS_OUT_FOR_DELIVERY
     return None
 
