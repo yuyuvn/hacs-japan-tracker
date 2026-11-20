@@ -1,20 +1,21 @@
 """Sagawa Express (佐川急便) tracker.
 
-Sagawa's tracking site (e-customer.sagawa-exp.co.jp/k2k) is a Next.js app. The
-lookup is a server action named ``searchPackages``, called with a multipart
-form body. The action ID changes when Sagawa redeploys, so it is discovered
-from the page's JS chunks and cached, with a known ID as a fallback.
+Sagawa's tracking page (e-customer.sagawa-exp.co.jp/k2k) now redirects to the
+classic JSF site on k2k.sagawa-exp.co.jp. Its input form takes up to 10
+numbers (``main:no1`` .. ``main:no10``) and needs the page's
+``javax.faces.ViewState``, so a lookup is a GET of the form followed by one
+POST. Pages are Shift_JIS (Windows-31J).
 """
 from __future__ import annotations
 
-import json
-import logging
 import re
 from typing import Any
 
 import aiohttp
+from bs4 import BeautifulSoup
 
 from .base import (
+    BATCH_SIZE,
     STATUS_NOT_FOUND,
     STATUS_UNKNOWN,
     BatchResult,
@@ -23,118 +24,72 @@ from .base import (
     all_failed,
     classify,
     clean,
+    decode,
     fetch_single,
     fill_missing,
     status_from_events,
 )
 
-_LOGGER = logging.getLogger(__name__)
-
-BASE = "https://e-customer.sagawa-exp.co.jp"
-PAGE_URL = BASE + "/k2k"
-PUBLIC_URL = PAGE_URL  # the new site has no per-number GET URL
+BASE = "https://k2k.sagawa-exp.co.jp"
+FORM_URL = BASE + "/p/sagawa/web/okurijoinput.jsp"
+PUBLIC_URL = BASE + "/p/web/okurijosearch.do?okurijoNo={number}"
 HEADERS = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) HomeAssistant-JapanTracker"}
 TIMEOUT = aiohttp.ClientTimeout(total=30)
 
-FALLBACK_ACTION_ID = "60e3b76ba7f1d28cf3c3fa01680217528f16cd1984"
-_CHUNK_RE = re.compile(r'/k2k/_next/static/chunks/[^"\']+\.js')
-_ACTION_RE = re.compile(r'createServerReference\)\("([0-9a-f]{32,})"[^)]*?"searchPackages"')
-_NOT_FOUND_WORDS = ("該当", "見つかりません", "登録されていません", "未登録")
-
-_action_id: str | None = None
+_NOT_FOUND_WORDS = ("該当", "見つかりません", "登録されていません", "未登録", "お確かめください")
+_BUSY_WORDS = ("混み合", "暫くたってから", "しばらくたってから")
 
 
-async def _discover_action_id(session: aiohttp.ClientSession) -> str:
-    """Find the current searchPackages action ID in the page's JS chunks."""
-    async with session.get(PAGE_URL, headers=HEADERS, timeout=TIMEOUT) as resp:
+async def _get(session: aiohttp.ClientSession, url: str, **kwargs: Any) -> str:
+    async with session.get(url, headers=HEADERS, timeout=TIMEOUT, **kwargs) as resp:
         resp.raise_for_status()
-        html = await resp.text()
-    for path in dict.fromkeys(_CHUNK_RE.findall(html)):
-        async with session.get(BASE + path, headers=HEADERS, timeout=TIMEOUT) as resp:
-            if resp.status != 200:
-                continue
-            match = _ACTION_RE.search(await resp.text())
-            if match:
-                return match.group(1)
-    raise CarrierError("Could not find Sagawa searchPackages action ID")
+        return decode(await resp.read())
 
 
-async def _call_action(session: aiohttp.ClientSession, action_id: str, numbers: list[str]) -> str:
-    # Same body the site's form sends: one `_1_tracking_number` field per
-    # number (max 10), then the action arguments referencing that form data.
-    fields = [("_1_tracking_number", n) for n in numbers] + [("0", '[null,"$K1"]')]
-    with aiohttp.MultipartWriter("form-data") as mp:
-        for name, value in fields:
-            part = mp.append(value, {"Content-Type": "text/plain; charset=utf-8"})
-            part.set_content_disposition("form-data", name=name)
-            # Browsers don't send a Content-Type per text field; keep it minimal.
-            part.headers.pop("Content-Type", None)
-    async with session.post(
-        PAGE_URL,
-        data=mp,
-        headers={
-            **HEADERS,
-            "Accept": "text/x-component",
-            "Next-Action": action_id,
-            "Origin": BASE,
-        },
-        timeout=TIMEOUT,
-    ) as resp:
-        if resp.status in (400, 404):  # Next.js answers an unknown action ID with 400
-            raise _StaleAction
+async def _post(session: aiohttp.ClientSession, data: dict[str, str]) -> str:
+    headers = {**HEADERS, "Origin": BASE, "Referer": FORM_URL}
+    async with session.post(FORM_URL, data=data, headers=headers, timeout=TIMEOUT) as resp:
         resp.raise_for_status()
-        return await resp.text()
+        return decode(await resp.read())
 
 
-class _StaleAction(Exception):
-    """The cached action ID is no longer valid."""
+def _view_state(html: str) -> str:
+    tag = BeautifulSoup(html, "html.parser").find("input", attrs={"name": "javax.faces.ViewState"})
+    if tag is None or not tag.get("value"):
+        _raise_busy(html)
+        raise CarrierError("Sagawa input form layout not recognised")
+    return tag["value"]
 
 
-def _payload(body: str) -> dict[str, Any]:
-    """Extract the action result object from a React Server Components stream."""
-    for line in body.splitlines():
-        _, sep, rest = line.partition(":")
-        if not sep or not rest.startswith("{"):
-            continue
-        try:
-            obj = json.loads(rest)
-        except ValueError:
-            continue
-        if isinstance(obj, dict) and "ok" in obj:
-            return obj
-    if "Server action not found" in body or "Failed to find Server Action" in body:
-        raise _StaleAction
-    raise CarrierError("Unexpected Sagawa response format")
+def _raise_busy(html: str) -> None:
+    """Sagawa answers with a 200 'service is busy, try later' page when overloaded."""
+    if any(w in html for w in _BUSY_WORDS):
+        raise CarrierError("Sagawa tracking service is busy, try again later")
 
 
 async def fetch_many(
     session: aiohttp.ClientSession, numbers: list[str], previous: dict[str, TrackingResult] | None = None
 ) -> BatchResult:
     """Look up to BATCH_SIZE numbers in one request."""
-    global _action_id  # noqa: PLW0603 - module-level cache shared by all parcels
     try:
-        for attempt in range(2):
-            action_id = _action_id or FALLBACK_ACTION_ID
-            try:
-                obj = _payload(await _call_action(session, action_id, numbers))
-                break
-            except _StaleAction:
-                if attempt:
-                    raise CarrierError("Sagawa action ID is stale even after rediscovery") from None
-                _LOGGER.debug("Sagawa action ID %s stale, rediscovering", action_id)
-                _action_id = await _discover_action_id(session)
-        if not obj.get("ok"):
-            raise CarrierError(obj.get("message") or "Sagawa returned an error")
+        view_state = _view_state(await _get(session, FORM_URL))
+        data = {f"main:no{i + 1}": "" for i in range(BATCH_SIZE)}
+        data.update({f"main:no{i + 1}": n for i, n in enumerate(numbers)})
+        data.update(
+            {
+                "main:toiStart": "お問い合わせ開始",
+                "main:correlation": "1",
+                "main_SUBMIT": "1",
+                "javax.faces.ViewState": view_state,
+            }
+        )
+        results = parse_results(await _post(session, data))
     except (aiohttp.ClientError, TimeoutError) as err:
         return all_failed(numbers, CarrierError(f"Sagawa request failed: {err}"))
     except CarrierError as err:
         return all_failed(numbers, err)
 
-    out: BatchResult = {}
-    for res in obj.get("results") or []:
-        number = str(res.get("trackingNumber") or "").replace("-", "")
-        if number in numbers:
-            out[number] = parse_result(res)
+    out: BatchResult = {n: r for n, r in results.items() if n in numbers}
     return fill_missing(numbers, out, "Sagawa")
 
 
@@ -142,52 +97,106 @@ async def fetch(session: aiohttp.ClientSession, number: str) -> TrackingResult:
     return await fetch_single(fetch_many, session, number)
 
 
+def _text(tag: Any) -> str:
+    return clean(tag.get_text(" ")) if tag is not None else ""
+
+
 def _strip_mark(text: Any) -> str:
     """'↓集荷' / '⇒輸送中' -> '集荷' / '輸送中'."""
     return re.sub(r"^[^\w぀-ヿ一-鿿]+", "", clean(text))
 
 
-def _date_line(line: Any) -> str:
-    """{'label': '配達完了日　　：', 'value': '1月1日 10時00分'} -> '配達完了日: 1月1日 10時00分'."""
-    if isinstance(line, dict) and "label" in line:
-        label = clean(line.get("label")).rstrip(":： ")
-        value = clean(line.get("value"))
-        return f"{label}: {value}" if label and value else label or value
-    return clean(line)
+def parse_results(html: str) -> dict[str, TrackingResult]:
+    """Result page -> {number: result}, one entry per searched number."""
+    soup = BeautifulSoup(html, "html.parser")
+    toggle = soup.find("dl", class_="toggle")
+    if toggle is None:
+        _raise_busy(html)
+        raise CarrierError("Sagawa result page layout not recognised")
+
+    out: dict[str, TrackingResult] = {}
+    for dt in toggle.find_all("dt", id=re.compile(r"^list\d+$")):
+        number = re.sub(r"\D", "", _text(dt.find("strong")))
+        if not number:
+            continue
+        detail = toggle.find("dd", id="detail" + dt["id"][len("list"):])
+        out[number] = parse_entry(dt, detail)
+    return out
 
 
-def parse_result(res: dict[str, Any]) -> TrackingResult:
-    """Parse one entry of the action's `results` list."""
-    top = clean(res.get("status"))
-    messages = " ".join(clean(m) for m in res.get("messageLines") or [])
-    events = [
-        {
-            "description": _strip_mark(h.get("status", "")),
-            "time": clean(h.get("date")),
-            "location": clean(h.get("office")),
-        }
-        for h in res.get("history") or []
-    ]
+def parse_entry(dt: Any, dd: Any) -> TrackingResult:
+    """Parse one number's summary (<dt>) and detail (<dd>) blocks."""
+    top = _text(dt.find("span", class_="state"))
 
-    if not events and any(w in f"{top} {messages}" for w in _NOT_FOUND_WORDS):
-        return TrackingResult(status=STATUS_NOT_FOUND, status_text=top or messages)
+    # Summary message line, plus optional date lines (e.g. 配達完了日) in dl.okurijo_info.
+    dates: list[str] = []
+    message = ""
+    cell = dt.find("td")
+    if cell is not None:
+        info = cell.find("dl", class_="okurijo_info")
+        if info is not None:
+            for item in info.find_all("dt"):
+                label = _text(item).rstrip(":： ")
+                value = _text(item.find_next_sibling("dd"))
+                line = f"{label}: {value}" if label and value else label or value
+                if line:
+                    dates.append(line)
+            info.extract()
+        message = _text(cell)
+
+    tables = dd.find_all("table") if dd is not None else []
+    info_rows: dict[str, Any] = {}
+    if tables:
+        for tr in tables[0].find_all("tr"):
+            th, td = tr.find("th"), tr.find("td")
+            if th is not None and td is not None:
+                info_rows[_text(th)] = td
+
+    events = []
+    if len(tables) > 1:
+        for tr in tables[1].find_all("tr"):
+            cells = [_text(td) for td in tr.find_all("td")]
+            if len(cells) >= 2 and cells[0]:
+                events.append(
+                    {
+                        "description": _strip_mark(cells[0]),
+                        "time": cells[1],
+                        "location": cells[2] if len(cells) > 2 else "",
+                    }
+                )
+
+    if not events and any(w in f"{top} {message}" for w in _NOT_FOUND_WORDS):
+        return TrackingResult(status=STATUS_NOT_FOUND, status_text=top or message)
 
     status = classify(top)
     if status == STATUS_UNKNOWN:
         status = status_from_events(events)
 
-    delivery = res.get("deliveryOffice") or {}
-    pickup = res.get("pickupOffice") or {}
+    # Detail rows such as お届け予定日 / 配達完了日 also count as delivery dates.
+    for label, td in info_rows.items():
+        value = _text(td)
+        if value and label != "出荷日" and "日" in label and f"{label}: {value}" not in dates:
+            dates.append(f"{label}: {value}")
+
+    def office(label: str) -> tuple[str, str]:
+        td = info_rows.get(label)
+        spans = [_text(s) for s in td.find_all("span", class_="eigyousyo")] if td is not None else []
+        name = spans[0] if spans else ""
+        tel = next((s.split(":", 1)[-1].strip() for s in spans[1:] if s.upper().startswith("TEL")), "")
+        return name, tel
+
+    pickup_name, _ = office("集荷に関するお問い合せ")
+    delivery_name, delivery_tel = office("配達に関するお問い合せ")
     return TrackingResult(
         status=status,
-        status_text=" – ".join(x for x in (top, messages) if x),
+        status_text=" – ".join(x for x in (top, message) if x),
         events=events,
         extra={
-            "shipped_date": res.get("shippedDate", ""),
-            "package_count": res.get("packageCount", ""),
-            "pickup_office": pickup.get("name", ""),
-            "delivery_office": delivery.get("name", ""),
-            "delivery_office_tel": delivery.get("tel", ""),
-            "delivery_dates": [_date_line(d) for d in res.get("dateLines") or []],
+            "shipped_date": _text(info_rows.get("出荷日")),
+            "package_count": _text(info_rows.get("お荷物個数")),
+            "pickup_office": pickup_name,
+            "delivery_office": delivery_name,
+            "delivery_office_tel": delivery_tel,
+            "delivery_dates": dates,
         },
     )
